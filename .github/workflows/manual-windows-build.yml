@@ -1,0 +1,68 @@
+name: Manual Windows test build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Enable pnpm
+        shell: pwsh
+        run: |
+          corepack enable
+          corepack install
+          node --version
+          pnpm --version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Disable updater signing for this test build
+        shell: pwsh
+        run: |
+          $configPath = 'src-tauri/tauri.conf.json'
+          $config = Get-Content $configPath -Raw | ConvertFrom-Json
+          $config.bundle.createUpdaterArtifacts = $false
+          $config | ConvertTo-Json -Depth 100 | Set-Content $configPath -Encoding utf8
+
+      - name: Build Windows MSI and portable executable
+        shell: pwsh
+        run: pnpm tauri build --bundles msi
+
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifact | Out-Null
+          $msi = Get-ChildItem -Path 'src-tauri/target/release/bundle' -Recurse -Filter '*.msi' | Select-Object -First 1
+          if ($null -eq $msi) { throw 'Windows MSI installer was not produced' }
+          Copy-Item $msi.FullName 'artifact/CC-Switch-Windows-x64.msi'
+          $exe = 'src-tauri/target/release/cc-switch.exe'
+          if (Test-Path $exe) {
+            Copy-Item $exe 'artifact/CC-Switch-Windows-x64-portable.exe'
+            @('# CC Switch portable build marker', 'portable=true') | Set-Content 'artifact/portable.ini' -Encoding utf8
+          }
+
+      - name: Upload Windows test package
+        uses: actions/upload-artifact@v4
+        with:
+          name: cc-switch-windows-test-${{ github.sha }}
+          path: artifact/
+          if-no-files-found: error
+          retention-days: 7
